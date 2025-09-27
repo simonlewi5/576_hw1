@@ -1,170 +1,230 @@
 #include <wx/wx.h>
 #include <wx/dcbuffer.h>
-#include <filesystem>
-#include <iostream>
-#include <fstream>
-#include <string>
 #include <vector>
-
+#include <string>
+#include <iostream>
+#include <algorithm>
+#include <cstdint>
+#include "Config.h"
+#include "ImageIO.h"
+#include "ColorSpace.h"
+#include "Quantizer.h"
+#include "Metrics.h"
 using namespace std;
-namespace fs = std::filesystem;
 
-/**
- * Display an image using WxWidgets.
- * https://www.wxwidgets.org/
- */
-
-/** Declarations*/
-
-/**
- * Class that implements wxApp
- */
-class MyApp : public wxApp {
- public:
+class MyApp : public wxApp
+{
+public:
   bool OnInit() override;
 };
 
-/**
- * Class that implements wxFrame.
- * This frame serves as the top level window for the program
- */
-class MyFrame : public wxFrame {
- public:
-  MyFrame(const wxString &title, string imagePath);
+class MyFrame : public wxFrame
+{
+public:
+  MyFrame(const wxString &title, const vector<uint8_t> &orig, const vector<uint8_t> &proc, int w, int h);
 
- private:
-  void OnPaint(wxPaintEvent &event);
-  wxImage inImage;
-  wxScrolledWindow *scrolledWindow;
-  int width;
-  int height;
+private:
+  void OnPaint(wxPaintEvent &);
+  wxImage origImg, procImg;
+  wxScrolledWindow *sc;
+  int w, h;
 };
 
-/** Utility function to read image data */
-unsigned char *readImageData(string imagePath, int width, int height);
+static void printYuvStats(const vector<uint8_t> &rgb)
+{
+  vector<float> Y, U, V;
+  rgbToYUV(rgb, Y, U, V);
+  auto mm = [&](const vector<float> &a)
+  { auto p=minmax_element(a.begin(),a.end()); return pair<float,float>(*p.first,*p.second); };
+  auto [ymin, ymax] = mm(Y);
+  auto [umin, umax] = mm(U);
+  auto [vmin, vmax] = mm(V);
+  cout << "Y:[" << ymin << "," << ymax << "] U:[" << umin << "," << umax << "] V:[" << vmin << "," << vmax << "]\n";
+}
 
-/** Definitions */
+static void checkRoundtrip(const vector<uint8_t> &rgb)
+{
+  vector<float> Y, U, V;
+  rgbToYUV(rgb, Y, U, V);
+  vector<uint8_t> rt;
+  yuvToRGB(Y, U, V, rt);
+  double m = mseRGB(rgb, rt);
+  cout << "Roundtrip MSE=" << m << " PSNR=" << psnrFromMse(m) << "\n";
+}
 
-/**
- * Init method for the app.
- * Here we process the command line arguments and
- * instantiate the frame.
- */
-bool MyApp::OnInit() {
+bool MyApp::OnInit()
+{
   wxInitAllImageHandlers();
+  try
+  {
+    vector<string> argStr(wxApp::argc);
+    vector<char *> args(wxApp::argc);
+    for (int i = 0; i < wxApp::argc; ++i)
+    {
+      argStr[i] = wxApp::argv[i].ToStdString();
+      args[i] = argStr[i].data();
+    }
+    QuantConfig cfg = parseArgs(wxApp::argc, args.data());
 
-  // deal with command line arguments here
-  cout << "Number of command line arguments: " << wxApp::argc << endl;
-  if (wxApp::argc != 2) {
-    cerr << "The executable should be invoked with exactly one filepath "
-            "argument. Example ./MyImageApplication '../../Lena_512_512.rgb'"
-         << endl;
-    exit(1);
+    vector<uint8_t> original;
+    loadPlanarRGB(cfg.path, cfg.width, cfg.height, original);
+    printYuvStats(original);
+    checkRoundtrip(original);
+
+    vector<uint8_t> processed(original.size());
+    vector<float> Y, U, V, qY, qU, qV, centersY, centersU, centersV;
+    vector<int> centersRi, centersGi, centersBi;
+    vector<uint8_t> Rq, Gq, Bq;
+
+    if (cfg.colorMode == 1)
+    {
+      vector<uint8_t> R(cfg.width * cfg.height), G(cfg.width * cfg.height), B(cfg.width * cfg.height);
+      for (int i = 0; i < cfg.width * cfg.height; i++)
+      {
+        R[i] = original[3 * i];
+        G[i] = original[3 * i + 1];
+        B[i] = original[3 * i + 2];
+      }
+      if (cfg.quantMode == 1)
+      {
+        quantizeUniformRGB(R, cfg.q[0], Rq, centersRi);
+        quantizeUniformRGB(G, cfg.q[1], Gq, centersGi);
+        quantizeUniformRGB(B, cfg.q[2], Bq, centersBi);
+      }
+      else
+      {
+        vector<float> Rf(R.begin(), R.end()), Gf(G.begin(), G.end()), Bf(B.begin(), B.end()), Rqf, Gqf, Bqf, cR, cG, cB;
+        quantizeSmart(Rf, cfg.q[0], Rqf, cR);
+        quantizeSmart(Gf, cfg.q[1], Gqf, cG);
+        quantizeSmart(Bf, cfg.q[2], Bqf, cB);
+        Rq.resize(Rqf.size());
+        Gq.resize(Gqf.size());
+        Bq.resize(Bqf.size());
+        for (size_t i = 0; i < Rqf.size(); i++)
+        {
+          Rq[i] = uint8_t(min(255.f, max(0.f, Rqf[i] + 0.5f)));
+          Gq[i] = uint8_t(min(255.f, max(0.f, Gqf[i] + 0.5f)));
+          Bq[i] = uint8_t(min(255.f, max(0.f, Bqf[i] + 0.5f)));
+        }
+        if ((1 << cfg.q[0]) <= 16)
+        {
+          cout << "R centers:";
+          for (float v : cR)
+            cout << " " << v;
+          cout << "\n";
+        }
+        if ((1 << cfg.q[1]) <= 16)
+        {
+          cout << "G centers:";
+          for (float v : cG)
+            cout << " " << v;
+          cout << "\n";
+        }
+        if ((1 << cfg.q[2]) <= 16)
+        {
+          cout << "B centers:";
+          for (float v : cB)
+            cout << " " << v;
+          cout << "\n";
+        }
+      }
+      for (int i = 0; i < cfg.width * cfg.height; i++)
+      {
+        processed[3 * i] = Rq[i];
+        processed[3 * i + 1] = Gq[i];
+        processed[3 * i + 2] = Bq[i];
+      }
+      double mR = mseChannelRGB(original, processed, 0), mG = mseChannelRGB(original, processed, 1), mB = mseChannelRGB(original, processed, 2);
+      cout << "Channel MSE R=" << mR << " G=" << mG << " B=" << mB << "\n";
+    }
+    else
+    {
+      rgbToYUV(original, Y, U, V);
+      if (cfg.quantMode == 1)
+      {
+        float minY = *min_element(Y.begin(), Y.end()), maxY = *max_element(Y.begin(), Y.end());
+        float minU = *min_element(U.begin(), U.end()), maxU = *max_element(U.begin(), U.end());
+        float minV = *min_element(V.begin(), V.end()), maxV = *max_element(V.begin(), V.end());
+        quantizeUniform(Y, cfg.q[0], minY, maxY, qY, centersY);
+        quantizeUniform(U, cfg.q[1], minU, maxU, qU, centersU);
+        quantizeUniform(V, cfg.q[2], minV, maxV, qV, centersV);
+      }
+      else
+      {
+        quantizeSmart(Y, cfg.q[0], qY, centersY);
+        quantizeSmart(U, cfg.q[1], qU, centersU);
+        quantizeSmart(V, cfg.q[2], qV, centersV);
+        if ((1 << cfg.q[0]) <= 16)
+        {
+          cout << "Y centers:";
+          for (float v : centersY)
+            cout << " " << v;
+          cout << "\n";
+        }
+        if ((1 << cfg.q[1]) <= 16)
+        {
+          cout << "U centers:";
+          for (float v : centersU)
+            cout << " " << v;
+          cout << "\n";
+        }
+        if ((1 << cfg.q[2]) <= 16)
+        {
+          cout << "V centers:";
+          for (float v : centersV)
+            cout << " " << v;
+          cout << "\n";
+        }
+      }
+      yuvToRGB(qY, qU, qV, processed);
+      double mY = mseFloat(Y, qY), mU = mseFloat(U, qU), mV = mseFloat(V, qV);
+      cout << "Component MSE Y=" << mY << " U=" << mU << " V=" << mV << "\n";
+    }
+
+    double m = mseRGB(original, processed), p = psnrFromMse(m);
+    cout << "MSE=" << m << " PSNR=" << p << "\n";
+
+    MyFrame *f = new MyFrame("Image Display", original, processed, cfg.width, cfg.height);
+    f->Show(true);
   }
-  cout << "First argument: " << wxApp::argv[0] << endl;
-  cout << "Second argument: " << wxApp::argv[1] << endl;
-  string imagePath = wxApp::argv[1].ToStdString();
-
-  MyFrame *frame = new MyFrame("Image Display", imagePath);
-  frame->Show(true);
-
-  // return true to continue, false to exit the application
+  catch (const exception &e)
+  {
+    cerr << e.what() << "\n";
+    return false;
+  }
   return true;
 }
 
-/**
- * Constructor for the MyFrame class.
- * Here we read the pixel data from the file and set up the scrollable window.
- */
-MyFrame::MyFrame(const wxString &title, string imagePath)
-    : wxFrame(NULL, wxID_ANY, title) {
-
-  // Modify the height and width values here to read and display an image with
-  // different dimensions.    
-  width = 512;
-  height = 512;
-
-  unsigned char *inData = readImageData(imagePath, width, height);
-
-  // the last argument is static_data, if it is false, after this call the
-  // pointer to the data is owned by the wxImage object, which will be
-  // responsible for deleting it. So this means that you should not delete the
-  // data yourself.
-  inImage.SetData(inData, width, height, false);
-
-  // Set up the scrolled window as a child of this frame
-  scrolledWindow = new wxScrolledWindow(this, wxID_ANY);
-  scrolledWindow->SetScrollbars(10, 10, width, height);
-  scrolledWindow->SetVirtualSize(width, height);
-
-  // Bind the paint event to the OnPaint function of the scrolled window
-  scrolledWindow->Bind(wxEVT_PAINT, &MyFrame::OnPaint, this);
-
-  // Set the frame size
-  SetClientSize(width, height);
-
-  // Set the frame background color
-  SetBackgroundColour(*wxBLACK);
+MyFrame::MyFrame(const wxString &title, const vector<uint8_t> &orig, const vector<uint8_t> &proc, int w_, int h_)
+    : wxFrame(NULL, wxID_ANY, title), w(w_), h(h_)
+{
+  unsigned char *o = (unsigned char *)malloc(w * h * 3);
+  unsigned char *p = (unsigned char *)malloc(w * h * 3);
+  for (int i = 0; i < w * h * 3; i++)
+  {
+    o[i] = orig[i];
+    p[i] = proc[i];
+  }
+  origImg.SetData(o, w, h, false);
+  procImg.SetData(p, w, h, false);
+  sc = new wxScrolledWindow(this, wxID_ANY);
+  sc->SetScrollbars(10, 10, w * 2, h);
+  sc->SetVirtualSize(w * 2, h);
+  sc->SetDoubleBuffered(true);
+  sc->Bind(wxEVT_PAINT, &MyFrame::OnPaint, this);
+  SetClientSize(w * 2, h);
 }
 
-/**
- * The OnPaint handler that paints the UI.
- * Here we paint the image pixels into the scrollable window.
- */
-void MyFrame::OnPaint(wxPaintEvent &event) {
-  wxBufferedPaintDC dc(scrolledWindow);
-  scrolledWindow->DoPrepareDC(dc);
-
-  wxBitmap inImageBitmap = wxBitmap(inImage);
-  dc.DrawBitmap(inImageBitmap, 0, 0, false);
-}
-
-/** Utility function to read image data */
-unsigned char *readImageData(string imagePath, int width, int height) {
-
-  // Open the file in binary mode
-  ifstream inputFile(imagePath, ios::binary);
-
-  if (!inputFile.is_open()) {
-    cerr << "Error Opening File for Reading" << endl;
-    exit(1);
-  }
-
-  // Create and populate RGB buffers
-  vector<char> Rbuf(width * height);
-  vector<char> Gbuf(width * height);
-  vector<char> Bbuf(width * height);
-
-  /**
-   * The input RGB file is formatted as RRRR.....GGGG....BBBB.
-   * i.e the R values of all the pixels followed by the G values
-   * of all the pixels followed by the B values of all pixels.
-   * Hence we read the data in that order.
-   */
-
-  inputFile.read(Rbuf.data(), width * height);
-  inputFile.read(Gbuf.data(), width * height);
-  inputFile.read(Bbuf.data(), width * height);
-
-  inputFile.close();
-
-  /**
-   * Allocate a buffer to store the pixel values
-   * The data must be allocated with malloc(), NOT with operator new. wxWidgets
-   * library requires this.
-   */
-  unsigned char *inData =
-      (unsigned char *)malloc(width * height * 3 * sizeof(unsigned char));
-      
-  for (int i = 0; i < height * width; i++) {
-    // We populate RGB values of each pixel in that order
-    // RGB.RGB.RGB and so on for all pixels
-    inData[3 * i] = Rbuf[i];
-    inData[3 * i + 1] = Gbuf[i];
-    inData[3 * i + 2] = Bbuf[i];
-  }
-
-  return inData;
+void MyFrame::OnPaint(wxPaintEvent &)
+{
+  wxBufferedPaintDC dc(sc);
+  sc->DoPrepareDC(dc);
+  wxBitmap b1(origImg), b2(procImg);
+  dc.DrawBitmap(b1, 0, 0, false);
+  dc.DrawBitmap(b2, w, 0, false);
+  dc.SetTextForeground(*wxWHITE);
+  dc.DrawText("Original", 5, 5);
+  dc.DrawText("Processed", w + 5, 5);
 }
 
 wxIMPLEMENT_APP(MyApp);
