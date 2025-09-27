@@ -1,12 +1,13 @@
 #include <cstdio>
 #include <string>
 #include <vector>
+#include <array>
 #include <algorithm>
 #include <wx/image.h>
 #include "ImageIO.h"
 #include "ColorSpace.h"
 #include "Quantizer.h"
-#include "Metrics.h"
+
 using namespace std;
 
 static bool savePng(const string &path, const vector<uint8_t> &rgb, int w, int h)
@@ -16,6 +17,17 @@ static bool savePng(const string &path, const vector<uint8_t> &rgb, int w, int h
     return img.SaveFile(path, wxBITMAP_TYPE_PNG);
 }
 
+static long long absErrRGB(const vector<uint8_t> &a, const vector<uint8_t> &b)
+{
+    long long s = 0;
+    size_t n = a.size();
+    for (size_t i = 0; i < n; i++)
+    {
+        s += llabs(int(a[i]) - int(b[i]));
+    }
+    return s;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 4)
@@ -23,13 +35,15 @@ int main(int argc, char **argv)
         fprintf(stderr, "usage: Analysis image.rgb W H\n");
         return 1;
     }
+
     string path = argv[1];
     int W = stoi(argv[2]), H = stoi(argv[3]);
+
     vector<uint8_t> orig;
     loadPlanarRGB(path, W, H, orig);
 
     FILE *f = fopen("analysis.csv", "w");
-    fprintf(f, "N,C,M,Q1,Q2,Q3,AbsErr,MSE,PSNR,Out\n");
+    fprintf(f, "N,<C,M,Q1,Q2,Q3>,Output,Error\n");
 
     for (int N : {4, 6, 8})
     {
@@ -66,7 +80,8 @@ int main(int argc, char **argv)
                         }
                         else
                         {
-                            vector<float> Rf(R.begin(), R.end()), Gf(G.begin(), G.end()), Bf(B.begin(), B.end()), Rqo, Gqo, Bqo, ctr;
+                            vector<float> Rf(R.begin(), R.end()), Gf(G.begin(), G.end()), Bf(B.begin(), B.end());
+                            vector<float> Rqo, Gqo, Bqo, ctr;
                             quantizeSmart(Rf, q[0], Rqo, ctr);
                             quantizeSmart(Gf, q[1], Gqo, ctr);
                             quantizeSmart(Bf, q[2], Bqo, ctr);
@@ -110,7 +125,6 @@ int main(int argc, char **argv)
                     }
 
                     long long ae = absErrRGB(orig, proc);
-                    double m = mseRGB(orig, proc), p = psnrFromMse(m);
                     string out = "";
                     if (N == 4)
                     {
@@ -119,8 +133,8 @@ int main(int argc, char **argv)
                         savePng(name, proc, W, H);
                         out = name;
                     }
-                    fprintf(f, "%d,%d,%d,%d,%d,%d,%lld,%.6f,%.3f,%s\n",
-                            N, C, M, q[0], q[1], q[2], ae, m, p, out.c_str());
+                    fprintf(f, "%d,\"<%d,%d,%d,%d,%d>\",%s,%lld\n",
+                            N, C, M, q[0], q[1], q[2], out.c_str(), ae);
                 }
             }
         }
