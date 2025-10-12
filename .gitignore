@@ -9,3 +9,5 @@
 ImageDisplay_C++_cross_platform/build
 
 
+ImageDisplay_C++_cross_platform/build/*
+build/*
