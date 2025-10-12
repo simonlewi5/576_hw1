@@ -37,9 +37,20 @@ set(SOURCES_ANALYSIS
     src/Metrics.cpp
 )
 
+# --- DCT App sources (GUI) ---
+set(SOURCES_DCT
+    src/DCTApp.cpp
+    src/DCT.cpp
+    src/ImageIO.cpp
+)
+if(WIN32)
+    list(APPEND SOURCES_DCT manifest/MyImageApplication.rc)
+endif()
+
 # Create executables
 add_executable(MyImageApplication ${SOURCES_APP})
 add_executable(Analysis ${SOURCES_ANALYSIS})
+add_executable(DCTApp ${SOURCES_DCT})
 
 # X11 required on Linux (no-op on macOS/Windows)
 if(UNIX AND NOT APPLE)
@@ -49,3 +60,4 @@ endif()
 # Link libraries
 target_link_libraries(MyImageApplication wx::core wx::base ${X11_LIBRARIES})
 target_link_libraries(Analysis           wx::core wx::base ${X11_LIBRARIES})
+target_link_libraries(DCTApp             wx::core wx::base ${X11_LIBRARIES})
