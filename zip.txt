@@ -1,0 +1,8 @@
+git ls-files -z -- \
+  ImageDisplay_C++_cross_platform \
+  CMakeLists.txt DCT_README.md \
+  ':(exclude)ImageDisplay_C++_cross_platform/analysis.csv' \
+  ':(exclude)ImageDisplay_C++_cross_platform/analysis.pdf' \
+  ':(exclude)ImageDisplay_C++_cross_platform/README.md' \
+  ':(exclude)*.rgb' ':(exclude)*.jpg' ':(exclude)*.png' \
+| xargs -0 zip -q cs576_hw2_submission.zip
