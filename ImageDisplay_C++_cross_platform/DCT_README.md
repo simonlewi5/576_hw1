@@ -19,7 +19,7 @@ cmake --build build --target DCTApp
 
 - **InputImage**: Path to the .rgb input image file (352x288 format)
 - **quantizationLevel** (N): Integer from 0-7 controlling compression
-  - 0 = no quantization (lossless)
+  - 0 = no quantization loss (DCT/IDCT may still introduce tiny numeric differences)
   - Higher values = more compression (2^N quantization)
 - **DeliveryMode** (M): Integer 1, 2, or 3
   - 1 = Baseline (sequential block-by-block)

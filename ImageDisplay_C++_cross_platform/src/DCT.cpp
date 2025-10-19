@@ -6,6 +6,12 @@
 #define M_PI 3.14159265358979323846
 #endif
 
+static const int kZigZag[64] = {
+    0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5,
+    12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13, 6, 7, 14, 21, 28,
+    35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51,
+    58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63};
+
 // Forward DCT: spatial domain -> frequency domain
 void forwardDCT(const double block[8][8], double dct[8][8])
 {
@@ -204,21 +210,42 @@ DCTDecoder::DCTDecoder(const DCTCoefficients &R, const DCTCoefficients &G, const
     : R_dct_(R), G_dct_(G), B_dct_(B), width_(width), height_(height),
       quantLevel_(quantLevel), mode_(mode), currentStep_(0)
 {
-
-    // Calculate total steps based on mode
     int numBlocks = R.numBlocksX * R.numBlocksY;
     switch (mode_)
     {
     case BASELINE:
-        totalSteps_ = numBlocks; // One step per block
+        totalSteps_ = numBlocks;
         break;
     case SPECTRAL_SELECTION:
-        totalSteps_ = 64; // 64 DCT coefficients (DC + 63 AC)
+        totalSteps_ = 64;
         break;
     case SUCCESSIVE_BIT:
-        // Find maximum bit depth needed
-        totalSteps_ = 16; // Assuming up to 16 bits is sufficient
+    {
+        auto scanMaxBits = [](const DCTCoefficients &C)
+        {
+            int mb = 0;
+            for (const auto &blk : C.blocks)
+            {
+                for (int coef : blk)
+                {
+                    int a = coef < 0 ? -coef : coef;
+                    if (a)
+                    {
+                        int bits = 32 - __builtin_clz(a);
+                        if (bits > mb)
+                            mb = bits;
+                    }
+                }
+            }
+            return mb;
+        };
+        int mbR = scanMaxBits(R);
+        int mbG = scanMaxBits(G);
+        int mbB = scanMaxBits(B);
+        int mb = std::max(mbR, std::max(mbG, mbB));
+        totalSteps_ = std::max(1, mb);
         break;
+    }
     }
 }
 
@@ -342,13 +369,14 @@ void DCTDecoder::decodeSpectralSelection(std::vector<uint8_t> &outputRGB)
             std::vector<uint8_t> &channel = (ch == 0) ? R : (ch == 1) ? G
                                                                       : B;
 
-            // Use only first numCoefs coefficients (in zig-zag order, but we'll use row-major for simplicity)
+            // Use only first numCoefs coefficients (in zig-zag order)
             int quant[8][8] = {0};
             for (int i = 0; i < numCoefs && i < 64; i++)
             {
-                int u = i / 8;
-                int v = i % 8;
-                quant[u][v] = dct.blocks[blockIdx][i];
+                int lin = kZigZag[i];
+                int u = lin / 8;
+                int v = lin % 8;
+                quant[u][v] = dct.blocks[blockIdx][lin];
             }
 
             // Dequantize and inverse DCT
